@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EPL Analytics Stadium</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <!-- Tailwind CDN for utility-first styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'pl-purple': '#3D195B',
+                        'neon-green': '#00FF85'
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- Lucide icons (lightweight, SVG icons) -->
+    <script src="https://unpkg.com/lucide/dist/lucide.min.js"></script>
+    <style>
+        :root {
+            --pl-purple: #3D195B;
+            --pl-green: #00ff85;
+            --pitch-green: #2e7d32;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            /* replaced pitch-green radial gradient with prominent Premier League logo */
+            background-color: #07210a;
+            background-image: linear-gradient(rgba(0,0,0,0.55), rgba(0,0,0,0.55)), url('premierleague-1024x1024.png');
+            background-position: center top;
+            background-repeat: no-repeat;
+            background-size: 36%;
+            color: white;
+            min-height: 100vh;
+        }
+
+        header {
+            position: sticky;
+            top: 0;
+            z-index: 50;
+            padding: 18px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 20px;
+            background: rgba(61,25,91,0.6);
+            backdrop-filter: blur(15px);
+            border-bottom: 1px solid rgba(255,255,255,0.06);
+            box-shadow: 0 6px 18px rgba(0,0,0,0.4);
+        }
+
+        header img { height: 60px; }
+
+        .tab-container {
+            width: 97%;           /* \u2190 CHANGED: was 90% \u2014 increase toward 100% to fill more, decrease to shrink */
+            max-width: none;      /* \u2190 CHANGED: was 1200px \u2014 removed cap so it grows past 1200px */
+            margin: 30px auto;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            overflow: visible;  /* \u2190 CHANGED: was hidden \u2014 allows chart content to show fully without clipping */
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .tabs {
+            display: flex;
+            background: rgba(0, 0, 0, 0.3);
+            border-bottom: 2px solid var(--pl-green);
+        }
+
+        .tab-link {
+            flex: 1;
+            padding: 15px;
+            text-align: center;
+            cursor: pointer;
+            transition: 0.3s;
+            font-weight: bold;
+            text-transform: uppercase;
+            border-right: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .tab-link:hover { background: rgba(0, 255, 133, 0.2); }
+        .tab-link.active {
+            background: var(--pl-green);
+            color: var(--pl-purple);
+        }
+
+        .tab-content {
+            display: none;
+            padding: 16px; /* \u2190 CHANGED: was 30px \u2014 less inner padding so charts fill more of the tab width */
+            animation: fadeIn 0.5s ease;
+        }
+
+        .tab-content.active { display: block; }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Common Chart Styles */
+        .chart-wrapper {
+            background: white;
+            border-radius: 10px;
+            padding: 12px; /* \u2190 CHANGED: was 20px \u2014 tighter card padding so iframe gets more horizontal room */
+            color: #333;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+        
+        .axis text { font-size: 12px; }
+        .tooltip {
+            position: absolute;
+            background: var(--pl-purple);
+            color: white;
+            padding: 8px;
+            border-radius: 4px;
+            pointer-events: none;
+            font-size: 12px;
+        }
+        .embedded-page {
+            width: 100%;
+            height: 300px;  /* \u2190 CHANGED: was 600px \u2014 now 85% of viewport height so chart fills the screen on any monitor */
+            border: none;
+            border-radius: 8px;
+            background: white;
+            display: block;
+        }
+        .kpi-container { display:flex; gap:12px; margin:12px 0; flex-wrap:wrap; }
+        .kpi-card { background: rgba(255,255,255,0.06); backdrop-filter: blur(15px); border:1px solid rgba(255,255,255,0.1); color:#000; padding:12px 16px; border-radius:10px; min-width:140px; box-shadow:0 8px 24px rgba(0,0,0,0.25); }
+        .kpi-card .value { font-size:20px; font-weight:800; color: #00FF85; }
+        .kpi-card .label { font-size:12px; color:#000; margin-top:6px; }
+        /* glass hover for table rows */
+        .table-row-glow:hover { box-shadow: 0 6px 20px rgba(0,255,133,0.08); background: linear-gradient(90deg, rgba(0,255,133,0.03), rgba(0,255,133,0.01)); }
+        /* Stadium placeholder styling */
+        .stadium-canvas { width:100%; height:320px; border-radius:12px; background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.06)); display:flex; align-items:center; justify-content:center; }
+    </style>
+    <style>
+        /* Enhanced typography for extreme readability and hierarchy */
+        :root {
+            --text-primary: #ffffff;
+            --text-strong: #f8fff9;
+            --text-muted: rgba(255,255,255,0.78);
+            --accent-neon: #00FF85;
+        }
+
+        body {
+            color: var(--text-primary);
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            text-rendering: optimizeLegibility;
+        }
+
+        /* Headings: heavier, tighter, clear drop-shadow for legibility over textured backgrounds */
+        h1, h2, h3, h4, h5, h6 {
+            color: var(--text-strong);
+            font-weight: 800;
+            letter-spacing: -0.3px;
+            text-shadow: 0 6px 22px rgba(0,0,0,0.65);
+            margin-top: 0.15rem;
+            margin-bottom: 0.5rem;
+        }
+
+        h2 { font-size: 30px; }
+        h3 { font-size: 20px; }
+        h4 { font-size: 16px; }
+
+        /* Paragraphs and supporting text: slightly bolder and higher contrast */
+        p, .kpi-card .label, .chart-wrapper p { color: var(--text-muted); font-weight: 700; }
+
+        /* Tabs and navigation: bold, uppercase, clearer spacing */
+        .tab-link {
+            color: var(--text-strong);
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            text-shadow: 0 3px 10px rgba(0,0,0,0.55);
+        }
+
+        .tab-link:hover { background: rgba(0,255,133,0.18); color: var(--pl-purple); }
+        .tab-link.active { background: var(--accent-neon); color: var(--pl-purple); box-shadow: 0 8px 28px rgba(0,255,133,0.08); }
+
+        /* KPI cards: maximize visual weight and hierarchy */
+        .kpi-card { border-radius:12px; padding:14px 18px; min-width:140px; }
+        .kpi-card .value { font-size:24px; font-weight:900; color: var(--accent-neon); letter-spacing: -0.5px; text-shadow: 0 10px 30px rgba(0,255,133,0.06); }
+        .kpi-card .label { font-size:12px; font-weight:800; color: #000; letter-spacing: 1px; text-transform: uppercase; }
+
+        /* Chart wrapper uses white background: ensure its internal text is dark and bold */
+        .chart-wrapper { color: #0b1214; }
+        .chart-wrapper h3 { color: #0b1214; font-weight: 900; }
+
+        /* Tables: strong typography for readability */
+        table th, table td { font-weight: 700; color: #0b1214; }
+
+        /* Tooltip prominence */
+        .tooltip { font-weight: 800; font-size: 13px; background: var(--pl-purple); color: #fff; box-shadow: 0 8px 30px rgba(0,0,0,0.6); }
+
+        /* subtle global emphasis glow for selected UI elements */
+        .kpi-card, .tab-link.active { transition: box-shadow 220ms ease, transform 160ms ease; }
+        .kpi-card:hover { transform: translateY(-3px); box-shadow: 0 18px 48px rgba(0,0,0,0.45); }
+    </style>
+</head>
+<body>
+
+    <header>
+    <div style="display:flex;align-items:center;gap:14px;">
+        <img src="premierleague-1024x1024.png" alt="EPL Logo" style="height:56px;border-radius:8px;background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.04));padding:6px;"/>
+        <div>
+            <div style="font-weight:800;color:#fff;font-size:18px;">EPL Analytics Stadium</div>
+            <div style="font-size:12px;color:rgba(255,255,255,0.75);margin-top:2px;">Sports Broadcast meets High‑Tech Dashboard</div>
+        </div>
+    </div>
+    <nav style="display:flex;gap:12px;align-items:center;">
+        <a href="#" class="tab-link" style="padding:8px 12px;border-radius:8px;background:transparent;color:#fff;">Home</a>
+        <a href="#" class="tab-link" style="padding:8px 12px;border-radius:8px;background:linear-gradient(90deg,#00FF85, rgba(0,255,133,0.08));color:#3D195B;font-weight:700;">Explore Dataset</a>
+    </nav>
+</header>
+
+<div class="tab-container">
+    <nav class="tabs">
+          <div class="tab-link active" onclick="openTab(event, 'Dataset')">English Premier League Dataset</div>
+          <div class="tab-link" onclick="openTab(event, 'Bimpe')">Adebimpe Oyaronbi: S3550745</div>
+          <div class="tab-link" onclick="openTab(event, 'Daniel')">Daniel Adamu: F5101328</div>
+          <div class="tab-link" onclick="openTab(event, 'Debbie')">Deborah Oyibo: F5170069</div>
+          <div class="tab-link" onclick="openTab(event, 'Kingsley')">Kingsley Chidebelu: E4411655</div>
+          <div class="tab-link" onclick="openTab(event, 'Destiny')">Destiny Obomanu: F5185269</div>
+    </nav>
+
+    <div id="Bimpe" class="tab-content">
+        <div class="chart-wrapper">
+            <h3>EPL Goals Trend (Home vs Away)</h3>
+            <iframe src="pages/Bimpe.html" class="embedded-page" title="Bimpe chart"></iframe>
+        </div>
+    </div>
+
+    <div id="Daniel" class="tab-content">
+        <div class="chart-wrapper">
+            <h3>Disciplinary Analysis: Fouls and Cards</h3>
+            <iframe src="pages/Daniel.html" class="embedded-page" title="Daniel chart"></iframe>
+        </div>
+    </div>
+
+    <div id="Debbie" class="tab-content">
+        <div class="chart-wrapper">
+            <h3>Season Win Rates: Home vs Away</h3>
+            <iframe src="pages/Debbie.html" class="embedded-page" title="Debbie chart"></iframe>
+        </div>
+    </div>
+
+    <div id="Kingsley" class="tab-content">
+        <div class="chart-wrapper">
+            <h3>Cards Conceded Across Top Teams</h3>
+            <iframe src="pages/Kingsley.html" class="embedded-page" title="Kingsley chart"></iframe>
+        </div>
+    </div>
+
+        <div id="Destiny" class="tab-content">
+        <div class="chart-wrapper">
+            <h3>League-Wide Performance Metric over Time</h3>
+            <iframe src="pages/Destiny.html" class="embedded-page" title="Destiny chart"></iframe>
+        </div>
+    </div>
+
+    <div id="Dataset" class="tab-content active">
+        <div class="chart-wrapper">
+            <div class="grid lg:grid-cols-12 gap-6">
+                <!-- Hero Left -->
+                <div class="lg:col-span-6 p-4" style="display:flex;flex-direction:column;justify-content:center;">
+                    <h2 style="font-size:30px;margin:0 0 8px;color:#000000; font-weight: 900;">The Beautiful Game, Quantified</h2>
+                    <p style="color:#223;opacity:0.85;margin-bottom:16px;">Explore 25 seasons of English Premier League data with high‑fidelity analytics, player tracking, and predictive insights.</p>
+                    <div class="kpi-container" style="margin-bottom:12px;">
+                        <div class="kpi-card"><div class="value" id="kpi-seasons">—</div><div class="label">Seasons</div></div>
+                        <div class="kpi-card"><div class="value" id="kpi-teams">—</div><div class="label">Unique Teams</div></div>
+                        <div class="kpi-card"><div class="value" id="kpi-matches">—</div><div class="label">Matches</div></div>
+                        <div class="kpi-card"><div class="value" id="kpi-goals">—</div><div class="label">Total Goals</div></div>
+                        <div class="kpi-card"><div class="value" id="kpi-xg">—</div><div class="label">Avg xG (est.)</div></div>
+                    </div>
+                    <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;">
+                        <button id="cta-explore" class="tab-link" style="background: linear-gradient(90deg,#00FF85,#a0ffbf);color:#3D195B;padding:10px 16px;border-radius:10px;font-weight:800;">Explore Data</button>
+                        <select id="season-select" style="padding:8px 12px;border-radius:8px;background:rgba(0,0,0,0.04);border:1px solid rgba(255,255,255,0.06);">
+                            <option value="all">All Seasons</option>
+                        </select>
+                        <a href="data/epl_final.csv" download class="tab-link" style="padding:8px 12px;border-radius:8px;">Download CSV</a>
+                    </div>
+                    <p style="font-size:13px;color:#444;">Design: Glass UI, stadium visualization, KPI pulse, and historical data engine with filtering and interactive previews.</p>
+                    <!-- Analytics Cards -->
+                    <div class="mt-4 grid sm:grid-cols-3 gap-4">
+                        <div class="kpi-card">
+                            <div style="display:flex;align-items:center;gap:8px;"><i data-lucide="cpu" style="color:#00FF85"></i><strong> Tactical AI</strong></div>
+                            <div style="font-size:13px;margin-top:8px;color:#000000;">Pattern discovery, formation analysis and tactical insights.</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div style="display:flex;align-items:center;gap:8px;"><i data-lucide="map-pin" style="color:#00FF85"></i><strong> Player Tracking</strong></div>
+                            <div style="font-size:13px;margin-top:8px;color:#000000;">Heatmaps, movement corridors and possession maps.</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div style="display:flex;align-items:center;gap:8px;"><i data-lucide="zap" style="color:#00FF85"></i><strong> Predictive Modeling</strong></div>
+                            <div style="font-size:13px;margin-top:8px;color:#000000;">Win probabilities, expected goals and match simulators.</div>
+                        </div>
+                    </div>
+                </div>
+                <!-- Hero Right: Stadium + Heatmap -->
+                <div class="lg:col-span-6 p-4">
+                    <div class="stadium-canvas" id="stadium-heatmap" aria-hidden="true">
+                        <!-- Simple SVG stadium with radial gradients to simulate heat -->
+                        <svg width="100%" height="320" viewBox="0 0 800 320" preserveAspectRatio="xMidYMid meet">
+                            <defs>
+                                <radialGradient id="g1" cx="40%" cy="40%" r="30%">
+                                    <stop offset="0%" stop-color="#00FF85" stop-opacity="0.9" />
+                                    <stop offset="60%" stop-color="#00FF85" stop-opacity="0.15" />
+                                    <stop offset="100%" stop-color="#00FF85" stop-opacity="0" />
+                                </radialGradient>
+                                <radialGradient id="g2" cx="70%" cy="60%" r="28%">
+                                    <stop offset="0%" stop-color="#00FF85" stop-opacity="0.8" />
+                                    <stop offset="60%" stop-color="#00FF85" stop-opacity="0.12" />
+                                    <stop offset="100%" stop-color="#00FF85" stop-opacity="0" />
+                                </radialGradient>
+                            </defs>
+                            <rect x="0" y="0" width="800" height="320" rx="12" fill="rgba(255,255,255,0.02)" />
+                            <g transform="translate(50,30)">
+                                <rect x="0" y="0" width="700" height="260" rx="20" fill="#12341a" stroke="rgba(255,255,255,0.04)" />
+                                <ellipse cx="200" cy="120" rx="120" ry="60" fill="url(#g1)" />
+                                <ellipse cx="480" cy="160" rx="140" ry="70" fill="url(#g2)" />
+                                <rect x="300" y="80" width="100" height="60" rx="8" fill="rgba(255,255,255,0.02)" stroke="rgba(255,255,255,0.03)" />
+                            </g>
+                        </svg>
+                    </div>
+                    <div style="margin-top:12px;background:rgba(255,255,255,0.03);backdrop-filter:blur(12px);padding:12px;border-radius:10px;border:1px solid rgba(255,255,255,0.06);">
+                        <strong style="color:#000000;">KPI Pulse</strong>
+                        <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
+                            <div class="kpi-card" style="min-width:100px;">
+                                <div class="value">75%</div>
+                                <div class="label">Avg Win Prob</div>
+                            </div>
+                            <div class="kpi-card" style="min-width:100px;">
+                                <div class="value">1.83</div>
+                                <div class="label">Avg xG</div>
+                            </div>
+                            <div class="kpi-card" style="min-width:100px;">
+                                <div class="value">2.4</div>
+                                <div class="label">Goals / Match</div>
+                            </div>
+                            <div class="kpi-card" style="min-width:100px;">
+                                <div class="value">4.2</div>
+                                <div class="label">Shots / Match</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Historical Data Engine -->
+            <div style="margin-top:18px;">
+                <h4 style="margin:6px 0 12px;color:#223;">Historical Data Engine</h4>
+                <div style="background:rgba(255,255,255,0.03);padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.06);">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                        <div style="color:#000000;">Showing dataset preview (25 seasons) </div>
+                        <div style="display:flex;gap:8px;align-items:center;">
+                            <button id="load-sample" class="tab-link" style="padding:8px 12px;border-radius:8px;">Load Preview</button>
+                            <button id="show-all" class="tab-link" style="padding:8px 12px;border-radius:8px;">Show All</button>
+                            <span id="dataset-count" style="color:#dfe7ea;padding:6px 10px;border-radius:8px;background:rgba(0,0,0,0.04);">Rows: —</span>
+                        </div>
+                    </div>
+                    <div id="dataset-table" style="overflow:auto;max-height:420px;border-radius:8px;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    function openTab(evt, tabName) {
+        let i, tabcontent, tablinks;
+        tabcontent = document.getElementsByClassName("tab-content");
+        for (i = 0; i < tabcontent.length; i++) tabcontent[i].classList.remove("active");
+        tablinks = document.getElementsByClassName("tab-link");
+        for (i = 0; i < tablinks.length; i++) tablinks[i].classList.remove("active");
+        document.getElementById(tabName).classList.add("active");
+        evt.currentTarget.classList.add("active");
+    }
+
+    // Try to detect useful columns and compute KPIs
+    function findColumns(cols, pattern) {
+        const p = pattern.toLowerCase();
+        return cols.filter(c => c.toLowerCase().includes(p));
+    }
+
+    function computeKPIs(data) {
+        if (!data || data.length === 0) return {};
+        const cols = Object.keys(data[0]);
+        const seasonCols = findColumns(cols, 'season');
+        const homeCols = findColumns(cols, 'home');
+        const awayCols = findColumns(cols, 'away');
+        const goalCols = findColumns(cols, 'goal').concat(cols.filter(c => ['fthg','ftag','hg','ag'].includes(c.toLowerCase())));
+
+        // Seasons
+        let seasons = new Set();
+        if (seasonCols.length) data.forEach(r => seasonCols.forEach(c => r[c] && seasons.add(r[c])));
+
+        // Teams
+        let teams = new Set();
+        if (homeCols.length || awayCols.length) {
+            data.forEach(r => {
+                homeCols.forEach(c => r[c] && teams.add(r[c]));
+                awayCols.forEach(c => r[c] && teams.add(r[c]));
+            });
+        } else {
+            // fallback: try any col with "team"
+            const teamCols = findColumns(cols, 'team');
+            teamCols.forEach(tc => data.forEach(r => r[tc] && teams.add(r[tc])));
+        }
+
+        // Matches
+        const matches = data.length;
+
+        // Goals: sum numeric-looking columns found
+        let totalGoals = 0;
+        if (goalCols.length) {
+            data.forEach(r => goalCols.forEach(c => {
+                const v = parseFloat(r[c]);
+                if (!isNaN(v)) totalGoals += v;
+            }));
+        } else {
+            // try common pairs
+            const pairs = [['FTHG','FTAG'], ['HG','AG'], ['home_goals','away_goals']];
+            let summed = false;
+            for (const pair of pairs) {
+                if (cols.map(c=>c.toLowerCase()).includes(pair[0].toLowerCase()) && cols.map(c=>c.toLowerCase()).includes(pair[1].toLowerCase())) {
+                    data.forEach(r => {
+                        const a = parseFloat(r[pair[0]]), b = parseFloat(r[pair[1]]);
+                        if (!isNaN(a)) totalGoals += a;
+                        if (!isNaN(b)) totalGoals += b;
+                    });
+                    summed = true; break;
+                }
+            }
+            if (!summed) totalGoals = NaN;
+        }
+
+        // expose detected columns for filtering
+        window.detectedCols = { seasonCols, homeCols, awayCols, goalCols, cols };
+        const avgXG = Number.isFinite(totalGoals) && matches ? (totalGoals / matches).toFixed(2) : '—';
+        return {
+            seasons: seasons.size || (seasons.size === 0 ? '—' : seasons.size),
+            teams: teams.size || (teams.size === 0 ? '—' : teams.size),
+            matches: matches,
+            goals: Number.isFinite(totalGoals) ? totalGoals : '—',
+            avgXG: avgXG
+        };
+    }
+
+    function updateKPIs(kpis) {
+        const s = document.getElementById('kpi-seasons');
+        const t = document.getElementById('kpi-teams');
+        const m = document.getElementById('kpi-matches');
+        const g = document.getElementById('kpi-goals');
+        if (s) s.textContent = kpis.seasons ?? '—';
+        if (t) t.textContent = kpis.teams ?? '—';
+        if (m) m.textContent = kpis.matches ?? '—';
+        if (g) g.textContent = kpis.goals ?? '—';
+    }
+
+    // Dataset preview and rendering
+    let datasetCache = null;
+
+    function renderTable(rows) {
+        const container = document.getElementById('dataset-table');
+        container.innerHTML = '';
+        if (!rows || rows.length === 0) {
+            container.innerHTML = '<em>No data to display.</em>';
+            return;
+        }
+
+        const table = document.createElement('table');
+        table.style.width = '100%';
+        table.style.borderCollapse = 'collapse';
+
+        const thead = document.createElement('thead');
+        const headerRow = document.createElement('tr');
+        Object.keys(rows[0]).forEach(h => {
+            const th = document.createElement('th');
+            th.textContent = h;
+            th.style.padding = '8px';
+            th.style.borderBottom = '1px solid #ddd';
+            th.style.textAlign = 'left';
+            headerRow.appendChild(th);
+        });
+        thead.appendChild(headerRow);
+        table.appendChild(thead);
+
+        const tbody = document.createElement('tbody');
+        rows.forEach(r => {
+            const tr = document.createElement('tr');
+            Object.values(r).forEach(v => {
+                const td = document.createElement('td');
+                td.textContent = v;
+                td.style.padding = '6px 8px';
+                td.style.borderBottom = '1px solid #f1f1f1';
+                tr.appendChild(td);
+            });
+            tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+
+        container.appendChild(table);
+    }
+
+    function updateCount(n) {
+        const el = document.getElementById('dataset-count');
+        if (el) el.textContent = 'Rows: ' + (Number.isInteger(n) ? n : '—');
+    }
+
+    async function loadDataset() {
+        if (datasetCache) return datasetCache;
+        try {
+            const data = await d3.csv('data/epl_final.csv');
+            datasetCache = data;
+            updateCount(data.length);
+            // compute KPIs automatically
+            try { updateKPIs(computeKPIs(data)); } catch(e){ console.warn('KPI compute failed', e); }
+            return data;
+        } catch (err) {
+            console.error('Failed to load CSV', err);
+            updateCount('error');
+            return null;
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        const loadBtn = document.getElementById('load-sample');
+        const showAllBtn = document.getElementById('show-all');
+
+        if (loadBtn) loadBtn.addEventListener('click', async () => {
+            const d = await loadDataset();
+            if (d) renderTable(d.slice(0, 20));
+        });
+
+        if (showAllBtn) showAllBtn.addEventListener('click', async () => {
+            const d = await loadDataset();
+            if (d) renderTable(d);
+        });
+
+        // Auto-load a small preview for the landing Dataset tab
+        (async () => {
+            const d = await loadDataset();
+            if (d) renderTable(d.slice(0, 20));
+        })();
+        // populate season select when data loads
+        (async () => {
+            const data = await loadDataset();
+            if (!data) return;
+            // fill season selector based on detected season column values
+            const sel = document.getElementById('season-select');
+            if (window.detectedCols && sel) {
+                const sCols = window.detectedCols.seasonCols;
+                let seasons = new Set();
+                if (sCols && sCols.length) data.forEach(r => sCols.forEach(c => r[c] && seasons.add(r[c])));
+                const sorted = Array.from(seasons).sort();
+                // if not found, fallback to year range 1992-2026
+                if (!sorted.length) {
+                    for (let y=1992;y<=2026;y++) {
+                        const o = document.createElement('option'); o.value = y; o.textContent = y; sel.appendChild(o);
+                    }
+                } else {
+                    sorted.forEach(sv => { const o = document.createElement('option'); o.value = sv; o.textContent = sv; sel.appendChild(o); });
+                }
+                sel.addEventListener('change', async (e) => {
+                    const v = e.target.value;
+                    const d2 = await loadDataset();
+                    if (!d2) return;
+                    if (v === 'all') { renderTable(d2.slice(0,20)); updateKPIs(computeKPIs(d2)); updateCount(d2.length); }
+                    else {
+                        const sCols = window.detectedCols.seasonCols;
+                        let filtered = [];
+                        if (sCols && sCols.length) filtered = d2.filter(r => sCols.some(c => String(r[c]) === String(v)));
+                        else filtered = d2.filter(r => Object.values(r).some(val => String(val) === String(v)));
+                        renderTable(filtered.slice(0,200)); updateKPIs(computeKPIs(filtered)); updateCount(filtered.length);
+                    }
+                });
+            }
+        })();
+
+        // initialize lucide icons
+        try { if (window.lucide) lucide.createIcons(); } catch(e) { console.warn('Lucide init failed', e); }
+    });
+
+    // IFRAME HEIGHT RESIZER
+    // <- CHANGED: instead of guessing chrome height, we measure exactly where each
+    // iframe sits on screen and fill from that point to the bottom of the viewport.
+    // This works regardless of header/tab/padding changes.
+    function resizeIframes() {
+      document.querySelectorAll('.embedded-page').forEach(function(iframe) {
+        iframe.style.height = '1px'; // collapse first so top position is accurate
+        var top     = iframe.getBoundingClientRect().top;
+        var padding = 10; // small bottom gap so page doesn't get a scrollbar
+        var iframeH = Math.max(window.innerHeight - top - padding, 300);
+        iframe.style.height = iframeH + 'px';
+      });
+    }
+    window.addEventListener('load',   resizeIframes);
+    window.addEventListener('resize', resizeIframes);
+
+</script>
+
+</body>
+</html>
