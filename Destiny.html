@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>EPL: Shots on Target vs Goals</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    /*  Colour tokens  */
+    :root {
+      --bg: #ffffff; --surface: #f7f8fa; --border: #dde1ea;
+      --text: #1a202c; --muted: #8892a4;
+      --top4: #0a8f5c; --mid: #1a6dbf; --rel: #c8213b;
+      --shadow: rgba(0,0,0,0.08);
+    }
+
+    /*  Page layout  */
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background-color: #f8f9fa;
+      padding: 12px; 
+      height: 100vh;
+      overflow: hidden;
+      color: var(--text);
+    }
+
+    .header {
+      width: 100%;
+      max-width: 1200px;
+      text-align: center;
+      margin-bottom: 0; 
+    }
+
+    .header h1 {
+      font-size: 1.9rem;      
+      margin: 0 0 6px 0;     
+    }
+
+    .header p {
+      font-size: 0.95rem;   
+      margin: 0 0 10px 0;  
+      color: var(--muted);
+    }
+
+    /*  Chart card  */
+    .container {
+      background: white;
+      padding: 10px; /* ← CHANGED: restored to 10px — original card padding */
+      border-radius: 12px;
+      box-shadow: 0 4px 20px var(--shadow);
+      display:flex; flex-direction:column; flex:1 1 auto; width:100%; max-width:none; /* ← CHANGED: was 1200px — removed cap so chart fills full iframe width */
+    }
+
+    /*  Season dropdown  */
+    .controls {
+      margin-bottom: 14px; 
+    }
+    select {
+      padding: 8px 12px;   
+      border-radius: 6px;
+      border: 1px solid #ddd;
+      font-size: 16px;     
+      cursor: pointer;
+    }
+
+    /*  Scatter dot  */
+    .dot { cursor: pointer; }
+
+    /*  Gridlines  */
+    .grid line { stroke: #eaedf2; stroke-dasharray: 4 3; stroke-width: 1px; }
+    .grid path { stroke: none; }
+
+    /*  Trend line  */
+    .trend-line { stroke: #c0c8d8; stroke-dasharray: 6,4; stroke-width: 1.5px; }
+
+    /*  Axis labels  */
+    .axis-label { font-size: 12px; font-weight: bold; fill: #666; }
+
+    /*  Hover tooltip  */
+    #tooltip {
+      position: fixed;
+      background: #fff;
+      border: 1.5px solid var(--border);
+      border-radius: 10px;
+      padding: 0.85rem 1.1rem;
+      font-size: 0.71rem;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.1s;
+      z-index: 999;
+      min-width: 200px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.12);
+    }
+    .tt-header {
+      display: flex; align-items: center; gap: 0.5rem;
+      margin-bottom: 0.65rem; padding-bottom: 0.55rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .tt-badge { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .tt-team { font-size: 1.05rem; font-weight: 700; color: var(--text); }
+    .tt-tier { font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-left: auto; }
+    .tt-row { display: flex; justify-content: space-between; gap: 1.5rem; margin-bottom: 0.28rem; color: var(--muted); }
+    .tt-row:last-child { margin-bottom: 0; }
+    .tt-row span:last-child { color: var(--text); font-weight: 500; }
+    .tt-divider { border: none; border-top: 1px solid var(--border); margin: 0.45rem 0; }
+    .tt-conversion { color: var(--top4) !important; }
+
+    /*  Legend  */
+    .legend {
+      display: flex; gap: 2rem; justify-content: center;
+      margin-top: 1.1rem; 
+    }
+    .legend-item {
+      display: flex; align-items: center; gap: 0.45rem;
+      font-size: 0.95rem; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.06em; color: var(--muted);
+    }
+    .legend-dot {
+      width: 14px; height: 14px; border-radius: 50%;
+      border: 1px solid rgba(0,0,0,0.1); flex-shrink: 0;
+    }
+  </style>
+</head>
+<body>
+
+  <!--  Page heading  -->
+  <div class="header">
+    <h1>Premier League Analysis</h1>
+    <p>Relationship between Shots on Target (SoT) and Goals Scored</p>
+  </div>
+
+  <!--  Season selector dropdown  -->
+  <div class="controls">
+    <label for="season-select">Season: </label>
+    <select id="season-select"></select>
+  </div>
+
+  <!--  SVG chart container  -->
+  <div class="container">
+    <svg id="chart"></svg>
+  </div>
+
+  <!--  Colour legend  -->
+  <div class="legend">
+    <div class="legend-item">
+      <div class="legend-dot" style="background:#0a8f5c"></div>Top 4 — Champions League
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:#1a6dbf"></div>Mid-table (5–17)
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:#c8213b"></div>Relegation (18–20)
+    </div>
+  </div>
+
+  <!--  Tooltip element (hidden until hover)  -->
+  <div id="tooltip"></div>
+
+  <script>
+
+    //  Tier classifier & colour/label maps 
+    function getTier(p){ return p<=4?"top4":p>=18?"relegation":"mid"; }
+    const COLOUR = { top4:"#0a8f5c", mid:"#1a6dbf", relegation:"#c8213b" };
+    const LABEL  = { top4:"Top 4 — Champions League", mid:"Mid-table (5–17)", relegation:"Relegation (18–20)" };
+
+    //  Chart margins 
+    const margin = { top: 20, right: 24, bottom: 56, left: 56 };
+    const tooltip  = d3.select("#tooltip");
+
+    //  Update function 
+    function update(seasons, seasonKey) {
+      const data = seasons[seasonKey];
+      const dur  = 600;
+
+      const container = document.querySelector('.container') || document.body;
+      const W = Math.max((container.clientWidth || window.innerWidth) - margin.left - margin.right - 24, 320);
+      const H = Math.max(Math.min(Math.floor(window.innerHeight * 0.60), (container.clientHeight - 80) || 520), 220);
+
+      d3.select('#chart').selectAll('*').remove();
+      const base = d3.select('#chart')
+        .attr('viewBox', `0 0 ${W + margin.left + margin.right} ${H + margin.top + margin.bottom}`)
+        .attr('preserveAspectRatio', 'xMidYMid meet')
+        .style('width','100%')
+        .style('height','100%');
+
+    //  Scales 
+    // x = Shots on Target (horizontal axis)
+    // y = Goals Scored (vertical axis)
+      const svg = base.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
+      const width = W - margin.left - margin.right;
+      const height = H - margin.top - margin.bottom;
+
+      const x = d3.scaleLinear().range([0, width]);
+      const y = d3.scaleLinear().range([height, 0]);
+
+    //  Axis groups 
+      const xGridG = svg.append("g").attr("class","grid").attr("transform",`translate(0,${height})`);
+      const yGridG = svg.append("g").attr("class","grid");
+      const xAxisG = svg.append("g").attr("transform", `translate(0,${height})`);
+      const yAxisG = svg.append("g");
+
+        //  Axis labels 
+      svg.append("text").attr("class","axis-label").attr("x", width/2).attr("y", height+52).attr("text-anchor","middle").text("SHOTS ON TARGET");
+      svg.append("text").attr("class","axis-label").attr("transform","rotate(-90)").attr("x",-(height/2)).attr("y",-50).attr("text-anchor","middle").text("GOALS SCORED");
+    
+      //  Layer order
+      const trendLyr = svg.append("g");
+      const dotGroup = svg.append("g");
+
+      //  Scale domains 
+      x.domain([d3.min(data, d => d.sot)   - 16, d3.max(data, d => d.sot)   + 16]);
+      y.domain([d3.min(data, d => d.goals)  -  7, d3.max(data, d => d.goals) +  7]);
+
+      //  Axes
+      xAxisG.transition().duration(dur).call(d3.axisBottom(x).ticks(6).tickFormat(d3.format("d")));
+      yAxisG.transition().duration(dur).call(d3.axisLeft(y).ticks(6).tickFormat(d3.format("d")));
+
+      //  Gridlines
+      xGridG.transition().duration(dur).call(d3.axisBottom(x).ticks(6).tickSize(-height).tickFormat(""));
+      yGridG.transition().duration(dur).call(d3.axisLeft(y).ticks(6).tickSize(-width).tickFormat(""));
+      xGridG.select(".domain").remove();
+      yGridG.select(".domain").remove();
+
+      //  Trend line
+      const mx = d3.mean(data, d => d.sot), my = d3.mean(data, d => d.goals);
+      const m  = d3.sum(data, d => (d.sot - mx) * (d.goals - my)) / d3.sum(data, d => (d.sot - mx) ** 2);
+      const b  = my - m * mx;
+      const x0 = d3.min(data, d => d.sot) - 10, x1 = d3.max(data, d => d.sot) + 10;
+
+      trendLyr.selectAll(".trend-line").data([null]).join(
+        e => e.append("line").attr("class","trend-line")
+      ).transition().duration(dur)
+        .attr("x1", x(x0)).attr("y1", y(m*x0+b))
+        .attr("x2", x(x1)).attr("y2", y(m*x1+b));
+
+        //  Dots
+      dotGroup.selectAll("circle")
+        .data(data, d => d.team)
+        .join(
+          enter => enter.append("circle")
+            .attr("class","dot")
+            .attr("r", 0)
+            .attr("cx", d => x(d.sot))
+            .attr("cy", d => y(d.goals)),
+          update => update,
+          exit   => exit.transition().duration(300).attr("r",0).remove()
+        )
+
+        //  Tooltip: show on hove
+        .on("mouseover", function(event, d) {
+          d3.select(this).raise().transition().duration(100).attr("r",11).attr("stroke","#222").attr("stroke-width",1.5);
+          dotGroup.selectAll("circle").style("opacity", 0.25);
+          d3.select(this).style("opacity", 1);
+
+          const tier = getTier(d.position);
+          const conv = ((d.goals / d.sot) * 100).toFixed(1);
+          tooltip.style("opacity", 1).html(`
+            <div class="tt-header">
+              <div class="tt-badge" style="background:${COLOUR[tier]}"></div>
+              <div class="tt-team">${d.team || "N/A"}</div>
+              <div class="tt-tier">${LABEL[tier]}</div>
+            </div>
+            <div class="tt-row"><span>Final Position</span><span>#${d.position}</span></div>
+            <div class="tt-row"><span>Goals Scored</span><span>${d.goals}</span></div>
+            <div class="tt-row"><span>Shots on Target</span><span>${d.sot}</span></div>
+            <hr class="tt-divider"/>
+            <div class="tt-row"><span>Conversion Rate</span><span class="tt-conversion">${conv}%</span></div>
+          `);
+        })
+
+        //  Tooltip: follow the cursor
+        .on("mousemove", function(event) {
+          const tx = Math.min(event.clientX + 16, window.innerWidth  - 230);
+          const ty = Math.min(event.clientY - 10, window.innerHeight - 190);
+          tooltip.style("left", tx+"px").style("top", ty+"px");
+        })
+
+        //  Tooltip: hide on mouse leave
+        .on("mouseleave", function() {
+          d3.select(this).transition().duration(150).attr("r",7).attr("stroke","rgba(0,0,0,0.15)").attr("stroke-width",1);
+          dotGroup.selectAll("circle").style("opacity", 1);
+          tooltip.style("opacity", 0);
+        })
+
+        //  Dot entrance / update transition 
+        .transition().duration(dur).delay((_, i) => i * 18)
+          .attr("cx", d => x(d.sot))
+          .attr("cy", d => y(d.goals))
+          .attr("r",  7)
+          .attr("fill", d => COLOUR[getTier(d.position)])
+          .attr("fill-opacity", 0.85)
+          .attr("stroke","rgba(0,0,0,0.15)").attr("stroke-width",1);
+    }
+
+    //  CSV loader 
+    d3.csv("epl_aggregated.csv").then(function(rows) {
+
+      //  Build seasons object
+      const seasons = {};
+      rows.forEach(function(row) {
+        const season = row.Season;
+        if (!seasons[season]) seasons[season] = [];
+        seasons[season].push({
+          team:     row.Team,
+          goals:    +row.TotalGoals,
+          sot:      +row.TotalShotsOnTarget,
+          position: +row.LeaguePosition
+        });
+      });
+
+      //  Populate dropdown
+      const select = d3.select("#season-select");
+      Object.keys(seasons).forEach(s => select.append("option").text(s).attr("value", s));
+      select.on("change", function() { update(seasons, this.value); });
+
+      //  First render 
+      update(seasons, "2000/01");
+
+      window.__destiny_seasons = seasons;
+
+      window.addEventListener('resize', function(){
+        update(window.__destiny_seasons, d3.select('#season-select').property('value') || '2000/01');
+      });
+
+    });
+  </script>
+</body>
+</html>
