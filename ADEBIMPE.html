@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>EPL Goals Trend by Gameweek</title>
+<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    background: #fff;
+    color: #222;
+    padding: 24px;
+  }
+
+  h2 { margin-bottom: 4px; }
+  p  { color: #666; font-size: 13px; margin-bottom: 16px; }
+
+  .controls {
+    display: flex;
+    gap: 20px;
+    align-items: flex-end;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+
+  label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 13px;
+    font-weight: bold;
+    color: #444;
+  }
+
+  select {
+    font-size: 14px;
+    padding: 6px 10px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background: #fff;
+    cursor: pointer;
+  }
+
+  .chart-box {
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    padding: 16px;
+    background: #fff;
+  }
+
+  #chart-title {
+    font-size: 15px;
+    font-weight: bold;
+    margin-bottom: 4px;
+  }
+
+  #chart-sub {
+    font-size: 12px;
+    color: #888;
+    margin-bottom: 14px;
+  }
+
+  svg { overflow: visible; }
+
+  .axis path, .axis line { stroke: #ccc; }
+  .axis text { fill: #666; font-size: 11px; }
+  .grid line { stroke: #eee; stroke-dasharray: 3 3; }
+  .grid path { stroke: none; }
+
+  .legend {
+    display: flex;
+    gap: 20px;
+    margin-top: 12px;
+    font-size: 12px;
+    color: #555;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-swatch { width: 20px; height: 3px; border-radius: 2px; }
+
+  .stats {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 14px;
+  }
+  .stat {
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-size: 12px;
+    color: #555;
+    background: #fafafa;
+    cursor: default;
+    transition: box-shadow 0.2s ease, border-color 0.2s ease, transform 0.2s ease, background 0.2s ease;
+  }
+  .stat:hover {
+    box-shadow: 0 4px 16px rgba(0,0,0,0.13);
+    border-color: #bbb;
+    transform: translateY(-2px);
+    background: #fff;
+  }
+  .stat strong { display: block; font-size: 18px; color: #222; margin-bottom: 2px; }
+
+  #tooltip {
+    position: fixed;
+    background: #fff;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    padding: 10px 13px;
+    font-size: 12px;
+    pointer-events: none;
+    opacity: 0;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+    min-width: 160px;
+    transition: opacity 0.1s;
+  }
+  #tooltip.show { opacity: 1; }
+  .tt-title { font-weight: bold; margin-bottom: 6px; color: #333; }
+  .tt-row { display: flex; justify-content: space-between; gap: 16px; margin: 2px 0; color: #555; }
+  .tt-divider { border: none; border-top: 1px solid #eee; margin: 5px 0; }
+</style>
+</head>
+<body>
+
+<h2>EPL Goals Trend — is there a correlation between venue (home/away) and scoring output</h2>
+<p>Goals scored each gameweek, home and away, across the season</p>
+
+<div class="controls">
+  <label>
+    Season
+    <select id="season-select"></select>
+  </label>
+  <label>
+    Club
+    <select id="club-select"></select>
+  </label>
+</div>
+
+<div class="chart-box">
+  <div id="chart-title">Loading...</div>
+  <div id="chart-sub">Goals scored per match · circles = home · triangles = away</div>
+  <svg id="chart"></svg>
+  <div class="legend">
+    <div class="legend-item">
+      <div class="legend-swatch" style="background:#2196F3"></div> Home goals
+    </div>
+    <div class="legend-item">
+      <div class="legend-swatch" style="background:#F44336"></div> Away goals
+    </div>
+  </div>
+  <div class="stats" id="stats"></div>
+</div>
+
+<div id="tooltip"></div>
+
+<script>
+const CSV_PATH = "epl_goals_subset.csv";
+
+const HOME_COLOR = "#2196F3";
+const AWAY_COLOR = "#F44336";
+
+let DATA    = {};
+let SEASONS = [];
+let curSeason = "2023/24";
+let curClub   = "Arsenal";
+
+// ── LOAD CSV ──────────────────────────────────────
+async function loadCSV() {
+  let raw;
+  try {
+    raw = await d3.csv(CSV_PATH);
+  } catch (e) {
+    document.getElementById("chart-title").textContent =
+      "Could not load " + CSV_PATH + ". Open with Live Server in VS Code.";
+    return;
+  }
+
+  // Build: DATA[season][team] = [ [gw, goals, type, cumHome, cumAway, opponent], ... ]
+  const temp = {};
+  raw.forEach(r => {
+    const s  = r.Season;
+    const hg = +r.FullTimeHomeGoals;
+    const ag = +r.FullTimeAwayGoals;
+    if (!temp[s]) temp[s] = {};
+    if (!temp[s][r.HomeTeam]) temp[s][r.HomeTeam] = [];
+    if (!temp[s][r.AwayTeam]) temp[s][r.AwayTeam] = [];
+    temp[s][r.HomeTeam].push({ date: r.MatchDate, goals: hg, type: "H", opp: r.AwayTeam });
+    temp[s][r.AwayTeam].push({ date: r.MatchDate, goals: ag, type: "A", opp: r.HomeTeam });
+  });
+
+  Object.keys(temp).forEach(s => {
+    DATA[s] = {};
+    Object.keys(temp[s]).forEach(team => {
+      const sorted = temp[s][team].sort((a, b) => a.date.localeCompare(b.date));
+      let ch = 0, ca = 0;
+      DATA[s][team] = sorted.map((m, i) => {
+        if (m.type === "H") ch += m.goals; else ca += m.goals;
+        return [i + 1, m.goals, m.type, ch, ca, m.opp];
+      });
+    });
+  });
+
+  SEASONS = Object.keys(DATA).sort();
+
+  // Populate season dropdown
+  const ss = document.getElementById("season-select");
+  SEASONS.forEach(s => {
+    const o = document.createElement("option");
+    o.value = s; o.textContent = s;
+    if (s === curSeason) o.selected = true;
+    ss.appendChild(o);
+  });
+  ss.addEventListener("change", e => {
+    curSeason = e.target.value;
+    populateClubs(curSeason, curClub);
+    draw();
+  });
+
+  populateClubs(curSeason, curClub);
+  document.getElementById("club-select").addEventListener("change", e => {
+    curClub = e.target.value; draw();
+  });
+
+  draw();
+}
+
+function populateClubs(season, keep) {
+  const clubs = Object.keys(DATA[season] || {}).sort();
+  const sel   = document.getElementById("club-select");
+  sel.innerHTML = "";
+  clubs.forEach(c => {
+    const o = document.createElement("option");
+    o.value = c; o.textContent = c;
+    sel.appendChild(o);
+  });
+  curClub = clubs.includes(keep) ? keep : clubs[0] || "";
+  sel.value = curClub;
+}
+
+// ── TOOLTIP ───────────────────────────────────────
+const tt = document.getElementById("tooltip");
+function showTT(d, e) {
+  const venue = d[2] === "H" ? "Home" : "Away";
+  const color = d[2] === "H" ? HOME_COLOR : AWAY_COLOR;
+  tt.innerHTML = `
+    <div class="tt-title">GW${d[0]} · ${venue} vs ${d[5]}</div>
+    <div class="tt-row"><span>Goals this match</span><span style="color:${color};font-weight:bold">${d[1]}</span></div>
+    <hr class="tt-divider">
+    <div class="tt-row"><span>Cumul. home</span><span style="color:${HOME_COLOR}">${d[3]}</span></div>
+    <div class="tt-row"><span>Cumul. away</span><span style="color:${AWAY_COLOR}">${d[4]}</span></div>
+  `;
+  tt.classList.add("show");
+  tt.style.left = Math.min(e.clientX + 14, window.innerWidth - 190) + "px";
+  tt.style.top  = (e.clientY - 10) + "px";
+}
+function hideTT() { tt.classList.remove("show"); }
+
+// ── DRAW ──────────────────────────────────────────
+function draw() {
+  const matches = (DATA[curSeason] || {})[curClub];
+  document.getElementById("chart-title").textContent = curClub + " — " + curSeason;
+
+  const svgEl = document.getElementById("chart");
+  d3.select(svgEl).selectAll("*").remove();
+  if (!matches || !matches.length) return;
+
+  const homePts = matches.filter(d => d[2] === "H");
+  const awayPts = matches.filter(d => d[2] === "A");
+
+  const margin = { top: 20, right: 20, bottom: 44, left: 44 };
+  const W = Math.max(svgEl.closest(".chart-box").clientWidth - 64, 300);
+  const H = 280;
+
+  d3.select(svgEl).attr("width", W + margin.left + margin.right)
+                  .attr("height", H + margin.top + margin.bottom);
+
+  const g = d3.select(svgEl).append("g")
+    .attr("transform", `translate(${margin.left},${margin.top})`);
+
+  // Scales
+  const nGW    = matches.length;
+  const xScale = d3.scaleLinear().domain([1, nGW]).range([0, W]);
+  const maxG   = d3.max(matches, d => d[1]) || 5;
+  const yScale = d3.scaleLinear().domain([0, maxG + 1]).range([H, 0]);
+
+  // Grid
+  g.append("g").attr("class", "grid")
+   .call(d3.axisLeft(yScale).tickSize(-W).tickFormat("").ticks(maxG));
+
+  // Axes
+  const step = nGW > 30 ? 4 : 2;
+  g.append("g").attr("class", "axis").attr("transform", `translate(0,${H})`)
+   .call(d3.axisBottom(xScale).tickValues(d3.range(1, nGW + 1, step)).tickFormat(d => "GW" + d));
+  g.append("g").attr("class", "axis")
+   .call(d3.axisLeft(yScale).ticks(maxG).tickFormat(d3.format("d")));
+
+  // Axis labels
+  g.append("text").attr("transform", "rotate(-90)").attr("y", -36).attr("x", -H / 2)
+   .attr("text-anchor", "middle").attr("font-size", 11).attr("fill", "#888")
+   .text("Goals scored");
+  g.append("text").attr("x", W / 2).attr("y", H + 38)
+   .attr("text-anchor", "middle").attr("font-size", 11).attr("fill", "#888")
+   .text("Gameweek");
+
+  // Lines connecting home matches and away matches separately
+  const lineFn = d3.line().x(d => xScale(d[0])).y(d => yScale(d[1])).curve(d3.curveMonotoneX);
+
+  g.append("path").datum(homePts)
+   .attr("fill", "none").attr("stroke", HOME_COLOR).attr("stroke-width", 1.5)
+   .attr("opacity", 0.6).attr("d", lineFn);
+
+  g.append("path").datum(awayPts)
+   .attr("fill", "none").attr("stroke", AWAY_COLOR).attr("stroke-width", 1.5)
+   .attr("opacity", 0.6).attr("d", lineFn);
+
+  // Home dots — circles
+  g.selectAll(".dot-home").data(homePts).enter()
+   .append("circle").attr("class", "dot-home")
+   .attr("cx", d => xScale(d[0])).attr("cy", d => yScale(d[1]))
+   .attr("r", d => d[1] >= 4 ? 7 : 5)
+   .attr("fill", HOME_COLOR).attr("stroke", "#fff").attr("stroke-width", 1.5)
+   .attr("opacity", d => d[1] === 0 ? 0.3 : 1)
+   .style("cursor", "pointer")
+   .on("mouseover", function(e, d) {
+     const baseR = d[1] >= 4 ? 7 : 5;
+     d3.select(this).raise()
+       .transition().duration(180).ease(d3.easeCubicOut)
+       .attr("r", baseR * 2.2)
+       .attr("stroke-width", 3)
+       .attr("filter", "drop-shadow(0 0 7px rgba(33,150,243,0.7))");
+     showTT(d, e);
+   })
+   .on("mousemove",  (e, d) => showTT(d, e))
+   .on("mouseleave", function(e, d) {
+     const baseR = d[1] >= 4 ? 7 : 5;
+     d3.select(this)
+       .transition().duration(200).ease(d3.easeCubicIn)
+       .attr("r", baseR)
+       .attr("stroke-width", 1.5)
+       .attr("filter", null);
+     hideTT();
+   });
+
+  // Away dots — triangles (using d3 symbol)
+  const triSizeNormal = d => d[1] >= 4 ? 80 : 40;
+  const triangle = d3.symbol().type(d3.symbolTriangle);
+  g.selectAll(".dot-away").data(awayPts).enter()
+   .append("path").attr("class", "dot-away")
+   .attr("d", d => triangle.size(triSizeNormal(d))())
+   .attr("transform", d => `translate(${xScale(d[0])},${yScale(d[1])})`)
+   .attr("fill", AWAY_COLOR).attr("stroke", "#fff").attr("stroke-width", 1)
+   .attr("opacity", d => d[1] === 0 ? 0.3 : 1)
+   .style("cursor", "pointer")
+   .on("mouseover", function(e, d) {
+     const bigSize = triSizeNormal(d) * 4.5;
+     d3.select(this).raise()
+       .transition().duration(180).ease(d3.easeCubicOut)
+       .attr("d", triangle.size(bigSize)())
+       .attr("stroke-width", 2)
+       .attr("filter", "drop-shadow(0 0 7px rgba(244,67,54,0.7))");
+     showTT(d, e);
+   })
+   .on("mousemove",  (e, d) => showTT(d, e))
+   .on("mouseleave", function(e, d) {
+     d3.select(this)
+       .transition().duration(200).ease(d3.easeCubicIn)
+       .attr("d", triangle.size(triSizeNormal(d))())
+       .attr("stroke-width", 1)
+       .attr("filter", null);
+     hideTT();
+   });
+
+  // Labels on big hauls (4+)
+  matches.filter(d => d[1] >= 4).forEach(d => {
+    const color = d[2] === "H" ? HOME_COLOR : AWAY_COLOR;
+    g.append("text")
+     .attr("x", xScale(d[0])).attr("y", yScale(d[1]) - 12)
+     .attr("text-anchor", "middle").attr("font-size", 10)
+     .attr("fill", color).attr("font-weight", "bold")
+     .text(d[1]);
+  });
+
+  // Hover crosshair — sits BEHIND the dots via pointer-events on the SVG background only
+  const vline = g.append("line").attr("y1", 0).attr("y2", H)
+    .attr("stroke", "#ccc").attr("stroke-width", 1).attr("stroke-dasharray", "4 3")
+    .style("pointer-events", "none").style("opacity", 0);
+
+  // Use the SVG group itself for crosshair tracking, but only when not over a dot
+  d3.select(svgEl)
+   .on("mousemove.crosshair", function(event) {
+     const [mx] = d3.pointer(event, g.node());
+     if (mx < 0 || mx > W) { vline.style("opacity", 0); return; }
+     const gw = Math.min(Math.max(Math.round(xScale.invert(mx)), 1), nGW);
+     vline.attr("x1", xScale(gw)).attr("x2", xScale(gw)).style("opacity", 1);
+   })
+   .on("mouseleave.crosshair", () => { vline.style("opacity", 0); });
+
+  // Stats
+  const totalH = homePts.reduce((s, d) => s + d[1], 0);
+  const totalA = awayPts.reduce((s, d) => s + d[1], 0);
+  const avgH   = (totalH / homePts.length).toFixed(2);
+  const avgA   = (totalA / awayPts.length).toFixed(2);
+  const bestH  = homePts.reduce((a, b) => b[1] > a[1] ? b : a);
+  const bestA  = awayPts.reduce((a, b) => b[1] > a[1] ? b : a);
+
+  document.getElementById("stats").innerHTML = `
+    <div class="stat"><strong style="color:${HOME_COLOR}">${totalH}</strong>total home goals</div>
+    <div class="stat"><strong style="color:${AWAY_COLOR}">${totalA}</strong>total away goals</div>
+    <div class="stat"><strong>${avgH}</strong>avg per home match</div>
+    <div class="stat"><strong>${avgA}</strong>avg per away match</div>
+    <div class="stat"><strong>${bestH[1]}</strong>best home (vs ${bestH[5]})</div>
+    <div class="stat"><strong>${bestA[1]}</strong>best away (vs ${bestA[5]})</div>
+  `;
+}
+
+loadCSV();
+window.addEventListener("resize", draw);
+</script>
+</body>
+</html>
