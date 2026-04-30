@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="description" content="EPL Home vs Away Wins - Grouped Bar Chart">
+        <title>EPL: Home vs Away Wins Per Season</title>
+        <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+        <style>
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                background-color: #f8f9fa;
+                padding: 40px;
+                color: #333;
+            }
+            .container {
+                background: white;
+                padding: 20px;
+                border-radius: 12px;
+                box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            }
+            .controls {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                margin-bottom: 16px;
+                flex-wrap: wrap;
+                gap: 10px;
+            }
+            .legend { display: flex; gap: 16px; }
+            .legend-item {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                font-size: 13px;
+                cursor: pointer;
+                color: #555;
+                user-select: none;
+            }
+            .legend-item.faded { opacity: 0.35; }
+            .legend-item .dot { width: 12px; height: 12px; border-radius: 3px; }
+            .btn-group { display: flex; gap: 6px; flex-wrap: wrap; }
+            button {
+                padding: 6px 14px;
+                border: 1px solid #ddd;
+                border-radius: 6px;
+                background: white;
+                font-size: 13px;
+                cursor: pointer;
+                color: #555;
+            }
+            button.active { background: #1a6dbf; color: white; border-color: #1a6dbf; }
+            select {
+                padding: 6px 12px;
+                border: 1px solid #ddd;
+                border-radius: 6px;
+                font-size: 13px;
+                color: #333;
+                cursor: pointer;
+                background: white;
+            }
+            .axis-label { font-size: 12px; font-weight: bold; fill: #666; }
+            .tick text  { fill: #666; font-size: 11px; }
+            .domain     { stroke: #ddd; }
+            .tick line  { stroke: #f0f0f0; }
+            .bar { cursor: pointer; }
+            #tooltip {
+                position: fixed;
+                background: rgba(255,255,255,0.97);
+                border: 1px solid #ccc;
+                padding: 10px 13px;
+                border-radius: 6px;
+                pointer-events: none;
+                opacity: 0;
+                font-size: 13px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                z-index: 10;
+                min-width: 155px;
+                transition: opacity 0.1s;
+            }
+            #tooltip strong { display: block; margin-bottom: 5px; font-size: 14px; }
+            #tooltip span   { display: block; color: #555; line-height: 1.7; }
+            .note {
+                margin-top: 16px;
+                font-size: 12px;
+                color: #888;
+                max-width: 780px;
+                line-height: 1.6;
+            }
+            .note b { color: #555; }
+        </style>
+    </head>
+    <body>
+
+        <h1>Premier League - Home vs Away Wins</h1>
+        <p style="color:#666; margin:0 0 24px; font-size:0.95rem;">
+            25 seasons of match results (2000/01 – 2024/25) &nbsp;·&nbsp; D3.js v7
+        </p>
+
+        <div class="container">
+            <div class="controls">
+
+                <div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
+
+                    <!-- Club dropdown -->
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <label for="club-select" style="font-size:13px; color:#555;">Club:</label>
+                        <select id="club-select" onchange="setClub(this.value)"></select>
+                    </div>
+
+                    <!-- Legend -->
+                    <div class="legend">
+                        <div class="legend-item" id="leg-home" onclick="toggle('home')">
+                            <div class="dot" style="background:#1a6dbf"></div> Home Wins
+                        </div>
+                        <div class="legend-item" id="leg-away" onclick="toggle('away')">
+                            <div class="dot" style="background:#c8213b"></div> Away Wins
+                        </div>
+                    </div>
+
+                </div>
+
+                <!-- View buttons -->
+                <div class="btn-group">
+                    <button class="active" onclick="setView('count', this)">Win Count</button>
+                    <button onclick="setView('pct', this)">Win Rate %</button>
+                    <button onclick="setView('diff', this)">H–A Gap</button>
+                </div>
+
+            </div>
+
+            <svg id="chart"></svg>
+
+            <p class="note" id="note">
+                ⚑ <b>2020/21 (COVID)</b> — The only season played behind closed doors. Away wins (153)
+                exceeded home wins (144) for the first time, demonstrating that crowd support is a
+                measurable driver of home advantage. Click legend items to isolate a series.
+            </p>
+        </div>
+
+        <div id="tooltip"></div>
+
+        <script>
+
+            //
+            // SVG size
+            //
+            const width  = 820;
+            const height = 420;
+
+            //
+            // Margins
+            //
+            const lmargin = 50;
+            const rmargin = 20;
+            const tmargin = 30;
+            const bmargin = 70;
+
+            //
+            // The actual chart size within the SVG area
+            //
+            const graphWidth  = width  - lmargin - rmargin;
+            const graphHeight = height - tmargin - bmargin;
+
+            //
+            // Colour constants
+            //
+            const HOME    = "#1a6dbf";
+            const AWAY    = "#c8213b";
+            const HOME_HL = "#4a90d9";
+            const AWAY_HL = "#e84f6b";
+
+            //
+            // State
+            //
+            let view        = "count";
+            let hidden      = new Set();
+            let dataset     = [];       // aggregated rows currently shown
+            let allRows     = [];       // every raw CSV row — kept for filtering
+            let selectedClub = "All";  // currently selected club
+
+            //
+            // Helper: return the correct value depending on view mode
+            //
+            function getVal(d, series) {
+                if (view === "count") return series === "home" ? d.h : d.a;
+                if (view === "pct")   return +((( series === "home" ? d.h : d.a) / d.t) * 100).toFixed(1);
+                return d.h - d.a;
+            }
+
+            //
+            // Create the SVG
+            //
+            const svg =
+                d3.select("#chart")
+                    .attr("width",  width)
+                    .attr("height", height)
+                    .style("background", "white");
+
+            //
+            // plotArea group — offset by margins
+            //
+            const plotArea =
+                svg.append("g")
+                    .attr("transform", `translate(${lmargin}, ${tmargin})`);
+
+            const xAxisGroup = plotArea.append("g")
+                .attr("transform", `translate(0, ${graphHeight})`);
+
+            const yAxisGroup = plotArea.append("g");
+
+            //
+            // Axis labels
+            //
+            plotArea.append("text")
+                .attr("class", "axis-label")
+                .attr("x", graphWidth / 2)
+                .attr("y", graphHeight + 62)
+                .attr("text-anchor", "middle")
+                .text("Season");
+
+            const yLabelText =
+                plotArea.append("text")
+                    .attr("class", "axis-label")
+                    .attr("transform", "rotate(-90)")
+                    .attr("x", -(graphHeight / 2))
+                    .attr("y", -40)
+                    .attr("text-anchor", "middle")
+                    .text("Number of Wins");
+
+            //
+            // Zero reference line (diff mode only)
+            //
+            const zeroLine =
+                plotArea.append("line")
+                    .attr("stroke", "#bbb")
+                    .attr("stroke-width", 1.5)
+                    .attr("stroke-dasharray", "5,4")
+                    .attr("opacity", 0);
+
+            //
+            // COVID season marker
+            //
+            const covidLine =
+                plotArea.append("line")
+                    .attr("stroke", "#e8a000")
+                    .attr("stroke-width", 1)
+                    .attr("stroke-dasharray", "4,3")
+                    .attr("opacity", 0.6)
+                    .attr("y1", 0);
+
+            const covidLabel =
+                plotArea.append("text")
+                    .attr("fill", "#e8a000")
+                    .attr("font-size", 9)
+                    .attr("font-weight", "bold")
+                    .attr("text-anchor", "middle")
+                    .text("COVID");
+
+            const tip = document.getElementById("tooltip");
+
+            //
+            // ── AGGREGATE ─────────────────────────────────────────────
+            // Build the dataset array from allRows, optionally filtered
+            // to a single club.
+            //
+            // For "All Teams":
+            //   h = total home wins across the whole league that season
+            //   a = total away wins across the whole league that season
+            //
+            // For a specific club:
+            //   h = matches where HomeTeam = club AND result = H
+            //   a = matches where AwayTeam = club AND result = A
+            //   t = total matches the club played that season
+            //
+            function aggregate(rows, club) {
+
+                const bySeason = d3.group(rows, function(d){ return d.Season; });
+
+                const result = [];
+
+                bySeason.forEach(function(matches, season) {
+
+                    let homeWins = 0;
+                    let awayWins = 0;
+                    let draws    = 0;
+                    let total    = 0;
+
+                    if (club === "All") {
+
+                        // Count all results across the whole league
+                        matches.forEach(function(m) {
+                            if      (m.FullTimeResult === "H") homeWins++;
+                            else if (m.FullTimeResult === "A") awayWins++;
+                            else                               draws++;
+                        });
+
+                        total = matches.length;
+
+                    } else {
+
+                        // Only count matches involving the selected club
+                        matches.forEach(function(m) {
+
+                            const playedHome = m.HomeTeam === club;
+                            const playedAway = m.AwayTeam === club;
+
+                            if (playedHome) {
+                                total++;
+                                if      (m.FullTimeResult === "H") homeWins++;
+                                else if (m.FullTimeResult === "D") draws++;
+                            }
+
+                            if (playedAway) {
+                                total++;
+                                if      (m.FullTimeResult === "A") awayWins++;
+                                else if (m.FullTimeResult === "D") draws++;
+                            }
+                        });
+                    }
+
+                    // Only add seasons where the club actually played
+                    if (total > 0) {
+                        result.push({
+                            s: season,
+                            h: homeWins,
+                            a: awayWins,
+                            d: draws,
+                            t: total
+                        });
+                    }
+                });
+
+                // Sort chronologically
+                result.sort(function(a, b){ return a.s.localeCompare(b.s); });
+
+                return result;
+            }
+
+            //
+            // ── DRAW ──────────────────────────────────────────────────
+            //
+            function draw() {
+
+                const isDiff = view === "diff";
+
+                const series = isDiff
+                    ? ["home"]
+                    : ["home", "away"].filter(function(s){ return !hidden.has(s); });
+
+                const seasons = dataset.map(function(d){ return d.s; });
+
+                //
+                // x0 — outer band scale, one band per season
+                //
+                const xScale =
+                    d3.scaleBand()
+                        .domain(seasons)
+                        .range([0, graphWidth])
+                        .paddingInner(0.22)
+                        .paddingOuter(0.1)
+                        .round(true);
+
+                //
+                // x1 — inner band scale, one band per series
+                //
+                const x1Scale =
+                    d3.scaleBand()
+                        .domain(series)
+                        .range([0, xScale.bandwidth()])
+                        .padding(0.06);
+
+                //
+                // Find max y value across all visible data
+                //
+                const allVals = isDiff
+                    ? dataset.map(function(d){ return d.h - d.a; })
+                    : dataset.flatMap(function(d){ return series.map(function(s){ return getVal(d, s); }); });
+
+                const yMin = isDiff ? Math.min(d3.min(allVals) - 5, -5) : 0;
+                const yMax = isDiff
+                    ? d3.max(allVals) + 5
+                    : (view === "pct" ? 80 : d3.max(allVals) + 3);
+
+                //
+                // y — linear scale
+                //
+                const yScale =
+                    d3.scaleLinear()
+                        .domain([yMin, yMax])
+                        .range([graphHeight, 0])
+                        .nice();
+
+                //
+                // Update axes
+                //
+                xAxisGroup.transition().duration(600)
+                    .call(d3.axisBottom(xScale).tickSize(0).tickPadding(8))
+                    .call(function(ax){ ax.select(".domain").attr("stroke","#ddd"); })
+                    .selectAll("text")
+                        .attr("transform", "rotate(-40)")
+                        .style("text-anchor", "end")
+                        .attr("dx", "-0.2em")
+                        .attr("dy",  "0.2em")
+                        .style("font-size", "9px");
+
+                yAxisGroup.transition().duration(600)
+                    .call(
+                        d3.axisLeft(yScale)
+                            .ticks(6)
+                            .tickFormat(function(d){ return view === "pct" ? d + "%" : d; })
+                            .tickSize(-graphWidth)
+                    )
+                    .call(function(ax){ ax.select(".domain").remove(); })
+                    .call(function(ax){ ax.selectAll(".tick line").attr("stroke","#f0f0f0"); });
+
+                yLabelText.text(
+                    view === "count" ? "Number of Wins" :
+                    view === "pct"   ? "Win Rate (%)"   :
+                                       "Home − Away Gap"
+                );
+
+                //
+                // Zero line (diff mode)
+                //
+                zeroLine.transition().duration(600)
+                    .attr("opacity", isDiff ? 1 : 0)
+                    .attr("x1", 0).attr("x2", graphWidth)
+                    .attr("y1", yScale(0)).attr("y2", yScale(0));
+
+                //
+                // COVID marker — only show when viewing all teams
+                //
+                const covidX = xScale("2020/21");
+                const showCovid = selectedClub === "All" && covidX !== undefined;
+                const cx = showCovid ? covidX + xScale.bandwidth() / 2 : 0;
+                covidLine.attr("opacity", showCovid ? 0.6 : 0)
+                    .attr("x1", cx).attr("x2", cx).attr("y2", graphHeight);
+                covidLabel.attr("opacity", showCovid ? 1 : 0)
+                    .attr("x", cx).attr("y", -8);
+
+                //
+                // Season groups
+                //
+                const seasonGroups =
+                    plotArea.selectAll(".season-group")
+                        .data(dataset, function(d){ return d.s; })
+                        .join("g")
+                            .attr("class", "season-group")
+                            .attr("transform", function(d){
+                                return `translate(${xScale(d.s)}, 0)`;
+                            });
+
+                //
+                // ── DIFF MODE ──
+                //
+                if (isDiff) {
+
+                    seasonGroups.selectAll("rect.bar-home, rect.bar-away").remove();
+
+                    seasonGroups.selectAll("rect.bar-diff")
+                        .data(function(d){ return [d]; })
+                        .join("rect")
+                            .attr("class", "bar bar-diff")
+                            .attr("x",     x1Scale("home"))
+                            .attr("width", x1Scale.bandwidth())
+                            .attr("rx", 3)
+                            .attr("fill", function(d){
+                                return (d.h - d.a) < 0 ? AWAY : HOME;
+                            })
+                            .on("mousemove", function(event, d){ showTip(event, d); })
+                            .on("mouseleave", function(){ tip.style.opacity = 0; })
+                            .transition().duration(600)
+                                .attr("y", function(d){
+                                    return (d.h - d.a) >= 0 ? yScale(d.h - d.a) : yScale(0);
+                                })
+                                .attr("height", function(d){
+                                    return Math.abs(yScale(0) - yScale(d.h - d.a));
+                                });
+
+                //
+                // ── GROUPED MODE ──
+                //
+                } else {
+
+                    seasonGroups.selectAll("rect.bar-diff").remove();
+
+                    //
+                    // Home bars
+                    //
+                    seasonGroups.selectAll("rect.bar-home")
+                        .data(function(d){ return [d]; })
+                        .join("rect")
+                            .attr("class", "bar bar-home")
+                            .attr("x",     x1Scale("home"))
+                            .attr("width", hidden.has("home") ? 0 : x1Scale.bandwidth())
+                            .attr("rx", 3)
+                            .attr("fill", HOME)
+                            .on("mousemove", function(event, d){
+                                d3.selectAll(".bar-home").attr("fill", HOME_HL);
+                                showTip(event, d, "home");
+                            })
+                            .on("mouseleave", function(){
+                                d3.selectAll(".bar-home").attr("fill", HOME);
+                                tip.style.opacity = 0;
+                            })
+                            .transition().duration(600)
+                                .attr("y",      function(d){ return yScale(getVal(d, "home")); })
+                                .attr("height", function(d){ return graphHeight - yScale(getVal(d, "home")); });
+
+                    //
+                    // Away bars
+                    //
+                    seasonGroups.selectAll("rect.bar-away")
+                        .data(function(d){ return [d]; })
+                        .join("rect")
+                            .attr("class", "bar bar-away")
+                            .attr("x",     x1Scale("away") || x1Scale("home"))
+                            .attr("width", hidden.has("away") ? 0 : x1Scale.bandwidth())
+                            .attr("rx", 3)
+                            .attr("fill", AWAY)
+                            .on("mousemove", function(event, d){
+                                d3.selectAll(".bar-away").attr("fill", AWAY_HL);
+                                showTip(event, d, "away");
+                            })
+                            .on("mouseleave", function(){
+                                d3.selectAll(".bar-away").attr("fill", AWAY);
+                                tip.style.opacity = 0;
+                            })
+                            .transition().duration(600)
+                                .attr("y",      function(d){ return yScale(getVal(d, "away")); })
+                                .attr("height", function(d){ return graphHeight - yScale(getVal(d, "away")); });
+                }
+            }
+
+            //
+            // ── TOOLTIP ────────────────────────────────────────────────
+            //
+            function showTip(event, d, series) {
+                const gap  = d.h - d.a;
+                const hPct = (d.h / d.t * 100).toFixed(1);
+                const aPct = (d.a / d.t * 100).toFixed(1);
+                const label = selectedClub === "All" ? "League" : selectedClub;
+
+                tip.innerHTML =
+                    "<strong>" + label + " — " + d.s + (d.s === "2020/21" && selectedClub === "All" ? " ⚑" : "") + "</strong>" +
+                    "<span>🏠 Home Wins: <b>" + d.h + "</b> (" + hPct + "%)</span>" +
+                    "<span>✈️ Away Wins: <b>" + d.a + "</b> (" + aPct + "%)</span>" +
+                    "<span>🤝 Draws: <b>" + d.d + "</b></span>" +
+                    "<span>Gap: <b style='color:" + (gap < 0 ? AWAY : HOME) + "'>" + (gap > 0 ? "+" : "") + gap + "</b></span>";
+
+                tip.style.opacity = 1;
+                tip.style.left = Math.min(event.clientX + 14, window.innerWidth  - 185) + "px";
+                tip.style.top  = Math.min(event.clientY - 10, window.innerHeight - 180) + "px";
+            }
+
+            //
+            // ── CONTROLS ───────────────────────────────────────────────
+            //
+            function toggle(s) {
+                if (view === "diff") return;
+                if (hidden.has(s)) {
+                    hidden.delete(s);
+                    document.getElementById("leg-" + s).classList.remove("faded");
+                } else {
+                    if (hidden.size >= 1) return;
+                    hidden.add(s);
+                    document.getElementById("leg-" + s).classList.add("faded");
+                }
+                draw();
+            }
+
+            function setView(v, btn) {
+                view = v;
+                document.querySelectorAll("button").forEach(function(b){
+                    b.classList.remove("active");
+                });
+                btn.classList.add("active");
+                document.querySelector(".legend").style.opacity = v === "diff" ? "0.4" : "1";
+                draw();
+            }
+
+            //
+            // Re-aggregate and redraw whenever the club dropdown changes
+            //
+            function setClub(club) {
+                selectedClub = club;
+                dataset = aggregate(allRows, club);
+
+                // Update the annotation note
+                const note = document.getElementById("note");
+                if (club === "All") {
+                    note.innerHTML = "⚑ <b>2020/21 (COVID)</b> — The only season played behind closed doors. Away wins (153) exceeded home wins (144) for the first time, demonstrating that crowd support is a measurable driver of home advantage. Click legend items to isolate a series.";
+                } else {
+                    const seasons = dataset.length;
+                    const totalH  = d3.sum(dataset, function(d){ return d.h; });
+                    const totalA  = d3.sum(dataset, function(d){ return d.a; });
+                    note.innerHTML = "<b>" + club + "</b> — " + seasons + " seasons in the dataset. Total home wins: <b>" + totalH + "</b> · Total away wins: <b>" + totalA + "</b>.";
+                }
+
+                draw();
+            }
+
+            //
+            // ── LOAD CSV ───────────────────────────────────────────────
+            //
+            d3.csv("epl_results.csv").then(function(rows) {
+
+                //
+                // Keep all raw rows for filtering later
+                //
+                allRows = rows;
+
+                //
+                // Build the initial dataset — all teams
+                //
+                dataset = aggregate(allRows, "All");
+
+                //
+                // Extract all unique club names and populate the dropdown
+                //
+                const clubs = Array.from(
+                    new Set(
+                        rows.flatMap(function(d){ return [d.HomeTeam, d.AwayTeam]; })
+                    )
+                ).sort();
+
+                const select = document.getElementById("club-select");
+
+                // "All Teams" option first
+                const allOption = document.createElement("option");
+                allOption.value = "All";
+                allOption.text  = "All Teams";
+                select.appendChild(allOption);
+
+                // One option per club
+                clubs.forEach(function(club) {
+                    const option = document.createElement("option");
+                    option.value = club;
+                    option.text  = club;
+                    select.appendChild(option);
+                });
+
+                //
+                // Initial render
+                //
+                draw();
+            });
+
+        </script>
+    </body>
+</html>
