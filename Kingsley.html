@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>A Comparative Analysis of Home Game Cards Across Teams</title>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <style>
+    body { font-family: Arial, sans-serif; background: white; padding: 30px; display: flex; flex-direction: column; align-items: center; }
+    h1   { font-size: 30px; color: black; margin-bottom: 4px; }
+    p.subtitle { font-size: 13px; color: #1a1c1f; margin-bottom: 18px; text-align: center; max-width: 580px; line-height: 1.6; }
+
+    /* Controls row */
+    .controls { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; justify-content: center; margin-bottom: 16px; font-size: 13px; }
+    .controls label { font-weight: bold; color: #1a1c1f; margin-right: 6px; }
+    .controls select, .controls input[type=range] { cursor: pointer; }
+    .controls select { padding: 5px 8px; border: 1px solid #1a1c1f; border-radius: 5px; background: rgb(110, 137, 110); font-size: 13px; }
+    #topNVal { font-weight: bold; color: red; min-width: 28px; display: inline-block; }
+
+    /* Legend */
+    .legend { display: flex; gap: 20px; margin-bottom: 12px; font-size: 13px; color: #1a1c1f }
+    .legend-item { display: flex; align-items: center; gap: 6px; }
+    .legend-box  { width: 14px; height: 14px; border-radius: 3px; }
+
+    /* Tooltip */
+    #tooltip {
+      position: fixed; background: white; border: 1px solid #ddd; border-radius: 6px;
+      padding: 10px 14px; font-size: 13px; pointer-events: none; opacity: 0;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.12); transition: opacity 0.15s; line-height: 1.8;
+    }
+    rect.bar { cursor: pointer; transition: opacity 0.15s; }
+    rect.bar:hover { opacity: 0.7; }
+    .tick text { font-size: 11px; fill: #1a1c1f; }
+  </style>
+</head>
+<body>
+
+  <h1>A Comparative Analysis of Home Game Cards Across Teams</h1>
+  <p class="subtitle">Total yellow and red cards received at home. Use the controls below to explore the data.</p>
+
+  <!-- 3 UI Controls -->
+  <div class="controls">
+
+    <!-- Control 1: Sort order -->
+    <div>
+      <label for="sortSelect">Sort by:</label>
+      <select id="sortSelect">
+        <option value="desc">Most Cards First</option>
+        <option value="asc">Fewest Cards First</option>
+        <option value="alpha">Team Name (A–Z)</option>
+      </select>
+    </div>
+
+    <!-- Control 2: Top N slider -->
+    <div>
+      <label for="topN">Show top <span id="topNVal">10</span> teams:</label>
+      <input type="range" id="topN" min="5" max="46" value="10" step="1">
+    </div>
+
+    <!-- Control 3: Card type filter -->
+    <div>
+      <label for="cardFilter">Show cards:</label>
+      <select id="cardFilter">
+        <option value="both">Both</option>
+        <option value="yellows">Yellow Only</option>
+        <option value="reds">Red Only</option>
+      </select>
+    </div>
+
+  </div>
+
+  <!-- Legend -->
+  <div class="legend" id="legend">
+    <div class="legend-item"><div class="legend-box" style="background:#F5C518"></div> Yellow Cards</div>
+    <div class="legend-item"><div class="legend-box" style="background:#E8312A"></div> Red Cards</div>
+  </div>
+
+  <div id="chart"></div>
+  <div id="tooltip"></div>
+
+<script>
+  const margin = { top: 20, right: 30, bottom: 110, left: 60 };
+  const width  = 860 - margin.left - margin.right;
+  const height = 400 - margin.top  - margin.bottom;
+
+  const svg = d3.select("#chart").append("svg")
+    .attr("width",  width  + margin.left + margin.right)
+    .attr("height", height + margin.top  + margin.bottom)
+    .append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+  const tooltip = document.getElementById("tooltip");
+
+  // Load CSV
+  d3.csv("HomeGame_Cards.csv", d => ({
+    team:    d.HomeTeam,
+    yellows: +d.HomeYellowCards,
+    reds:    +d.HomeRedCards
+  }))
+  .then(rows => {
+
+    // Aggregate totals per team
+    const teamMap = d3.rollup(rows,
+      g => ({ yellows: d3.sum(g, d => d.yellows), reds: d3.sum(g, d => d.reds), games: g.length }),
+      d => d.team
+    );
+    const allData = Array.from(teamMap, ([team, v]) => ({
+      team, yellows: v.yellows, reds: v.reds, games: v.games, total: v.yellows + v.reds
+    }));
+
+    // Read current control values
+    function getControls() {
+      return {
+        sort:   document.getElementById("sortSelect").value,
+        topN:   +document.getElementById("topN").value,
+        filter: document.getElementById("cardFilter").value
+      };
+    }
+
+    // Main draw function — called every time a control changes
+    function draw() {
+      const { sort, topN, filter } = getControls();
+
+      // Apply sort
+      let data = [...allData];
+      if (sort === "desc")  data.sort((a, b) => b.total - a.total);
+      if (sort === "asc")   data.sort((a, b) => a.total - b.total);
+      if (sort === "alpha") data.sort((a, b) => a.team.localeCompare(b.team));
+
+      // Apply top N slice
+      data = data.slice(0, topN);
+
+      // Apply card filter — decide which keys to stack
+      const keys   = filter === "yellows" ? ["yellows"] : filter === "reds" ? ["reds"] : ["yellows", "reds"];
+      const colors = { yellows: "#F5C518", reds: "#E8312A" };
+
+      // Stack the data
+      const layers = d3.stack().keys(keys)(data);
+
+      // Scales
+      const x = d3.scaleBand().domain(data.map(d => d.team)).range([0, width]).padding(0.25);
+      const maxVal = d3.max(data, d => filter === "yellows" ? d.yellows : filter === "reds" ? d.reds : d.total);
+      const y = d3.scaleLinear().domain([0, maxVal * 1.15]).nice().range([height, 0]);
+
+      // Clear and redraw
+      svg.selectAll("*").remove();
+
+      // X axis
+      svg.append("g").attr("transform", `translate(0,${height})`).call(d3.axisBottom(x))
+        .selectAll("text").attr("transform", "rotate(-40)").style("text-anchor", "end").style("font-size", "11px"); 
+      svg.append("text")
+    .attr("x", width / 2)
+    .attr("y", height + margin.bottom - 8)
+    .attr("text-anchor", "middle")
+    .style("font-size", "12px")
+    .style("fill", "black")
+    .text("Clubs");  
+
+      // Y axis
+      svg.append("g").call(d3.axisLeft(y).ticks(5));
+      svg.append("text").attr("transform","rotate(-90)").attr("x",-height/2).attr("y",-48)
+        .attr("text-anchor","middle").style("font-size","12px").style("fill","black").text("Total Cards");
+
+      // Draw bars
+      layers.forEach(layer => {
+        svg.selectAll(`.bar-${layer.key}`).data(layer).join("rect")
+          .attr("class", "bar")
+          .attr("x",      d => x(d.data.team))
+          .attr("y",      d => y(d[1]))
+          .attr("height", d => Math.max(0, y(d[0]) - y(d[1])))
+          .attr("width",  x.bandwidth())
+          .attr("fill",   colors[layer.key])
+          .attr("rx", 2)
+          .on("mousemove", (event, d) => {
+            const t = d.data;
+            const shown = filter === "yellows" ? `🟡 Yellows: <strong>${t.yellows}</strong>` :
+                          filter === "reds"    ? `🔴 Reds: <strong>${t.reds}</strong>` :
+                          `🟡 Yellows: <strong>${t.yellows}</strong><br>🔴 Reds: <strong>${t.reds}</strong><br>📊 Total: <strong>${t.total}</strong>`;
+            tooltip.style.opacity = "1";
+            tooltip.style.left = (event.clientX + 14) + "px";
+            tooltip.style.top  = (event.clientY - 40) + "px";
+            tooltip.innerHTML  = `<strong>${t.team}</strong><br>${shown}<br>🏟️ Games: <strong>${t.games}</strong>`;
+          })
+          .on("mouseleave", () => { tooltip.style.opacity = "0"; });
+      });
+    }
+
+    // Initial draw
+    draw();
+
+    // Update slider label and redraw on any control change
+    document.getElementById("topN").addEventListener("input", e => {
+      document.getElementById("topNVal").textContent = e.target.value;
+      draw();
+    });
+    document.getElementById("sortSelect").addEventListener("change", draw);
+    document.getElementById("cardFilter").addEventListener("change", draw);
+
+  })
+  .catch(() => {
+    document.getElementById("chart").innerHTML =
+      `<p style="color:red">Could not load <strong>HomeGame_Cards.csv</strong> — place it in the same folder as this HTML file.</p>`;
+  });
+</script>
+</body>
+</html>
